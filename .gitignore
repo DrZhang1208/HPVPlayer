@@ -1,0 +1,25 @@
+/node_modules
+/oh_modules
+**/oh_modules
+/local.properties
+/.idea
+**/build
+/.hvigor
+**/.cxx
+**/.test
+/.clangd
+/.clang-format
+/.clang-tidy
+**/oh-package-lock.json5
+/.appanalyzer
+/.cache
+/.zcode
+# 大体积预编译三方库（克隆后参考 third_party/README 放置）
+/third_party/libmpv-dist
+/mpv/libs
+**/libmpv_wrapper.so
+**/*.har
+# 嵌套 git 仓库（独立项目，克隆后自行获取）
+/third_party/libmpv-ohos-build/
+/third_party/mpv-arkts/
+libmpv-ohos-build/

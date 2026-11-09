@@ -1,0 +1,61 @@
+{
+  "app": {
+    "signingConfigs": [
+      {
+        "name": "default",
+        "type": "HarmonyOS",
+        "material": {
+          "certpath": "/Users/zhangdd/.ohos/config/default_HPVPlayer_Pet-wi0lsuSkPDWjjbo6e9mFPVAOw3RfpGGeKvKjIbA=.cer",
+          "keyAlias": "debugKey",
+          "keyPassword": "0000001AC5C8A4F6CB8DC5DE51E77F144473FF780D50A4C2D820FECAAC2D8901FCAC2A0EF322B434F3E8",
+          "profile": "/Users/zhangdd/.ohos/config/default_HPVPlayer_Pet-wi0lsuSkPDWjjbo6e9mFPVAOw3RfpGGeKvKjIbA=.p7b",
+          "signAlg": "SHA256withECDSA",
+          "storeFile": "/Users/zhangdd/.ohos/config/default_HPVPlayer_Pet-wi0lsuSkPDWjjbo6e9mFPVAOw3RfpGGeKvKjIbA=.p12",
+          "storePassword": "0000001AE776F70FCBA50FF513F89136E17377883FF4296013BD04CF4F2D889E6BDC84A226EC0DA648C3"
+        }
+      }
+    ],
+    "products": [
+      {
+        "name": "default",
+        "signingConfig": "default",
+        "targetSdkVersion": "6.1.1(24)",
+        "compatibleSdkVersion": "6.0.0(20)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          },
+          "nativeCompiler": "BiSheng"
+        }
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug"
+      },
+      {
+        "name": "release"
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "mpv",
+      "srcPath": "./mpv"
+    }
+  ]
+}

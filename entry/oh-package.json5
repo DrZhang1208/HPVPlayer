@@ -1,0 +1,11 @@
+{
+  "name": "entry",
+  "version": "0.1.0",
+  "description": "HPVPlayer entry module",
+  "main": "",
+  "author": "",
+  "license": "",
+  "dependencies": {
+    "@mpv-ohos/mpv-arkts": "@module:mpv"
+  }
+}

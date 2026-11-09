@@ -1,0 +1,88 @@
+{
+  "color": [
+    {
+      "name": "start_window_background",
+      "value": "#F1F3F5"
+    },
+    {
+      "name": "page_background",
+      "value": "#F1F3F5"
+    },
+    {
+      "name": "card_background",
+      "value": "#FFFFFF"
+    },
+    {
+      "name": "card_background_pressed",
+      "value": "#E8EAED"
+    },
+    {
+      "name": "list_divider",
+      "value": "#0D000000"
+    },
+    {
+      "name": "text_primary",
+      "value": "#E5000000"
+    },
+    {
+      "name": "text_secondary",
+      "value": "#99000000"
+    },
+    {
+      "name": "text_tertiary",
+      "value": "#66000000"
+    },
+    {
+      "name": "brand",
+      "value": "#0A59F7"
+    },
+    {
+      "name": "brand_light",
+      "value": "#1A0A59F7"
+    },
+    {
+      "name": "text_on_brand",
+      "value": "#FFFFFF"
+    },
+    {
+      "name": "warning",
+      "value": "#E84026"
+    },
+    {
+      "name": "input_background",
+      "value": "#0F000000"
+    },
+    {
+      "name": "chip_background",
+      "value": "#1A0A59F7"
+    },
+    {
+      "name": "placeholder_bg_1",
+      "value": "#E2E9F5"
+    },
+    {
+      "name": "placeholder_bg_2",
+      "value": "#EDE5F3"
+    },
+    {
+      "name": "placeholder_bg_3",
+      "value": "#E1EFEF"
+    },
+    {
+      "name": "placeholder_bg_4",
+      "value": "#F3E9E1"
+    },
+    {
+      "name": "placeholder_bg_5",
+      "value": "#E2EFE7"
+    },
+    {
+      "name": "scrim",
+      "value": "#66000000"
+    },
+    {
+      "name": "player_control_bg",
+      "value": "#66000000"
+    }
+  ]
+}
