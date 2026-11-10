@@ -13,8 +13,10 @@ import { PlayLauncher } from '../services/PlayLauncher';
 import { LibraryStore } from '../services/LibraryStore';
 import { LibraryOps, LibraryProgress } from '../services/LibraryOps';
 import { SettingsStore } from '../services/SettingsStore';
+import { Scraper } from '../services/Scraper';
 import { TmdbClient } from '../services/TmdbClient';
-import { appNav, NavRoutes, tabSignal, TabIndex } from '../services/AppNav';
+import { BangumiClient } from '../services/BangumiClient';
+import { appNav, NavRoutes, tabSignal, TabIndex, libraryDirty } from '../services/AppNav';
 
 const DOMAIN = 0x0000;
 
@@ -67,9 +69,20 @@ export struct LibraryTab {
   // 海报墙列数按可用宽度自适应，避免横屏/大屏下卡片过大一行仅 3 列
   @Local gridCols: number = 3;
   private inited: boolean = false;
+  private dirtyHooked: boolean = false;
 
   private columnsTemplate(): string {
     return `1fr `.repeat(this.gridCols).trim();
+  }
+
+  /** 卡片标题字号：列数越多卡片越小，字号随之缩小（14→12） */
+  private titleFontSize(): number {
+    return this.gridCols >= 8 ? 12 : (this.gridCols >= 5 ? 13 : 14);
+  }
+
+  /** 占位首字母字号 */
+  private placeholderFontSize(): number {
+    return this.gridCols >= 8 ? 22 : (this.gridCols >= 5 ? 26 : 30);
   }
 
   private toast(message: string): void {
@@ -77,7 +90,14 @@ export struct LibraryTab {
   }
 
   aboutToAppear(): void {
+    if (!this.dirtyHooked) {
+      this.dirtyHooked = true;
+      libraryDirty.on(() => {
+        this.refreshGroups();
+      });
+    }
     if (this.inited) {
+      this.refreshGroups();
       return;
     }
     this.inited = true;
@@ -85,6 +105,7 @@ export struct LibraryTab {
     SettingsStore.init(context).then(async () => {
       await LibraryStore.get().init(context);
       TmdbClient.init(context);
+      BangumiClient.init(context);
       this.consumeDebugSource();
       this.refreshGroups();
       // 首次进入自动扫描 + 刮削
@@ -167,6 +188,44 @@ export struct LibraryTab {
     }
   }
 
+  private async rescanAll(): Promise<void> {
+    if (this.busy) {
+      return;
+    }
+    this.busy = true;
+    this.busyText = '正在扫描…';
+    try {
+      await LibraryOps.scanAll((p: LibraryProgress) => {
+        this.busyText = p.phase === 'scan' ?
+          `扫描中 · ${p.current}` : `刮削 ${p.done}/${p.total} · ${p.current}`;
+      });
+    } finally {
+      this.busy = false;
+      this.busyText = '';
+      this.refreshGroups();
+    }
+  }
+
+  private async rescrapeAll(): Promise<void> {
+    if (this.busy) {
+      return;
+    }
+    this.busy = true;
+    this.busyText = '重新刮削…';
+    try {
+      const matched = await Scraper.rescrapeAll((p) => {
+        this.busyText = `刮削 ${p.done}/${p.total} · ${p.current}`;
+      });
+      this.toast(`刮削完成，匹配 ${matched} 组`);
+    } catch (err) {
+      this.toast(`${(err as Error).message}`);
+    } finally {
+      this.busy = false;
+      this.busyText = '';
+      this.refreshGroups();
+    }
+  }
+
   @Builder
   chip(f: ChipFilter, label: string) {
     Text(label)
@@ -193,7 +252,7 @@ export struct LibraryTab {
         } else {
           Column({ space: 8 }) {
             Text(group.title.length > 0 ? group.title.substring(0, 1) : '?')
-              .fontSize(30)
+              .fontSize(this.placeholderFontSize())
               .fontWeight(FontWeight.Bold)
               .fontColor($r('app.color.text_secondary'))
             if (group.kind === 'episode') {
@@ -210,7 +269,7 @@ export struct LibraryTab {
         }
         if (group.kind === 'episode') {
           Text(`共${group.items.length}集`)
-            .fontSize(10)
+            .fontSize(this.gridCols >= 6 ? 9 : 10)
             .fontColor(Color.White)
             .backgroundColor($r('app.color.player_control_bg'))
             .borderRadius(6)
@@ -221,13 +280,13 @@ export struct LibraryTab {
       .width('100%')
 
       Text(group.title)
-        .fontSize(14)
+        .fontSize(this.titleFontSize())
         .fontColor($r('app.color.text_primary'))
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .width('100%')
       Text(group.year > 0 ? `${group.year}` : ' ')
-        .fontSize(12)
+        .fontSize(this.gridCols >= 8 ? 10 : 12)
         .fontColor($r('app.color.text_secondary'))
         .width('100%')
     }
@@ -272,6 +331,18 @@ export struct LibraryTab {
   @Builder
   pageMenu() {
     Menu() {
+      MenuItem({
+        content: '刷新（重新扫描）',
+        symbolStartIcon: new SymbolGlyphModifier($r('sys.symbol.arrow_clockwise'))
+          .fontColor([$r('app.color.brand')]),
+      })
+        .onClick(() => this.rescanAll())
+      MenuItem({
+        content: '重新刮削全部',
+        symbolStartIcon: new SymbolGlyphModifier($r('sys.symbol.wand_and_stars'))
+          .fontColor([$r('app.color.brand')]),
+      })
+        .onClick(() => this.rescrapeAll())
       MenuItem({
         content: '打开 URL',
         symbolStartIcon: new SymbolGlyphModifier($r('sys.symbol.paperplane'))
@@ -329,17 +400,27 @@ export struct LibraryTab {
           }, (group: LibraryGroup) => `${group.title}-${group.posterFile !== ''}`)
         }
         .columnsTemplate(this.columnsTemplate())
-        .columnsGap(12)
-        .rowsGap(16)
+        .columnsGap(this.gridCols >= 6 ? 10 : 12)
+        .rowsGap(this.gridCols >= 6 ? 12 : 16)
         .padding({ left: 16, right: 16, top: 4, bottom: 24 })
         .width('100%')
         .layoutWeight(1)
         .scrollBar(BarState.Off)
         .onAreaChange((_old: Area, newArea: Area) => {
-          // 目标卡片宽度约 300~360vp，最少 3 列最多 8 列
+          // 按官方断点 sm(<600vp)/md(<840vp)/lg(>=840vp) 自适应列数：
+          // 手机 3 列起、折叠/小平板 4 列起、平板横屏 6 列起，目标卡片宽约 110~150vp
           const width = newArea.width as number;
           if (width > 0) {
-            this.gridCols = Math.max(3, Math.min(8, Math.floor(width / 320)));
+            let target = 112;
+            let minCols = 3;
+            if (width >= 840) {
+              target = 150;
+              minCols = 6;
+            } else if (width >= 600) {
+              target = 140;
+              minCols = 4;
+            }
+            this.gridCols = Math.max(minCols, Math.min(12, Math.floor(width / target)));
           }
         })
       } else {

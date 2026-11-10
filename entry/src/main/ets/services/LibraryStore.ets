@@ -231,6 +231,11 @@ export class LibraryStore {
           posterFile: '',
           items: [],
           addedTs: 0,
+          overview: '',
+          rating: 0,
+          cast: [],
+          runtime: 0,
+          genres: [],
         };
         groups.set(key, group);
       }
@@ -240,6 +245,21 @@ export class LibraryStore {
       }
       if (item.posterFile !== undefined && item.posterFile !== '' && group.posterFile === '') {
         group.posterFile = item.posterFile;
+      }
+      if (group.overview === '' && item.overview !== undefined) {
+        group.overview = item.overview;
+      }
+      if (group.rating === 0 && item.rating !== undefined) {
+        group.rating = item.rating;
+      }
+      if (group.cast.length === 0 && item.cast !== undefined) {
+        group.cast = item.cast;
+      }
+      if (group.runtime === 0 && item.runtime !== undefined) {
+        group.runtime = item.runtime;
+      }
+      if (group.genres.length === 0 && item.genres !== undefined) {
+        group.genres = item.genres;
       }
       group.addedTs = Math.max(group.addedTs, item.addedTs);
     }

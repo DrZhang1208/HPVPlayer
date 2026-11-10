@@ -13,53 +13,77 @@ const AUDIO_EXTS = ['.aac', '.flac', '.m4a', '.mp3', '.ogg', '.opus', '.wav', '.
 @ComponentV2
 export struct TracksSheet {
   @Param @Require player: Player;
+  /** 打开时聚焦的分组：'audio' 只显音轨 / 'subs' 只显字幕 / 其余显示全部 */
+  @Param focus: string = '';
   @Local loading: boolean = false;
+
+  private showVideo(): boolean {
+    return this.focus !== 'audio' && this.focus !== 'subs';
+  }
+
+  private showAudio(): boolean {
+    return this.focus !== 'subs';
+  }
+
+  private showSubs(): boolean {
+    return this.focus !== 'audio';
+  }
 
   build() {
     Scroll() {
       Column({ space: 4 }) {
-        this.sectionTitle('视频轨')
-        this.trackRow(this.player.state.track.video.id === 'auto', '自动', () => {
-          this.player.setVideoTrack(VideoTrack.auto());
-        })
-        this.trackRow(this.player.state.track.video.id === 'no', '禁用视频', () => {
-          this.player.disableVideoTrack();
-        })
-        ForEach(this.player.state.tracks.video, (t: VideoTrack) => {
-          this.trackRow(this.player.state.track.video.id === t.id, this.trackLabel(t.title, t.lang, t.codec), () => {
-            this.player.setVideoTrack(t);
+        if (this.showVideo()) {
+          this.sectionTitle('视频轨')
+          this.trackRow(this.player.state.track.video.id === 'auto', '自动', () => {
+            this.player.setVideoTrack(VideoTrack.auto());
           })
-        }, (t: VideoTrack) => `v-${t.id}`)
+          this.trackRow(this.player.state.track.video.id === 'no', '禁用视频', () => {
+            this.player.disableVideoTrack();
+          })
+          ForEach(this.player.state.tracks.video, (t: VideoTrack) => {
+            this.trackRow(this.player.state.track.video.id === t.id, this.trackLabel(t.title, t.lang, t.codec), () => {
+              this.player.setVideoTrack(t);
+            })
+          }, (t: VideoTrack) => `v-${t.id}`)
+        }
 
-        this.sectionTitle('音轨')
-        this.trackRow(this.player.state.track.audio.id === 'auto', '自动', () => {
-          this.player.setAudioTrack(AudioTrack.auto());
-        })
-        this.trackRow(this.player.state.track.audio.id === 'no', '静音', () => {
-          this.player.disableAudioTrack();
-        })
-        ForEach(this.player.state.tracks.audio, (t: AudioTrack) => {
-          this.trackRow(this.player.state.track.audio.id === t.id, this.trackLabel(t.title, t.lang, t.codec), () => {
-            this.player.setAudioTrack(t);
+        if (this.showAudio()) {
+          this.sectionTitle('音轨')
+          this.trackRow(this.player.state.track.audio.id === 'auto', '自动', () => {
+            this.player.setAudioTrack(AudioTrack.auto());
           })
-        }, (t: AudioTrack) => `a-${t.id}`)
+          this.trackRow(this.player.state.track.audio.id === 'no', '静音', () => {
+            this.player.disableAudioTrack();
+          })
+          ForEach(this.player.state.tracks.audio, (t: AudioTrack) => {
+            this.trackRow(this.player.state.track.audio.id === t.id, this.trackLabel(t.title, t.lang, t.codec), () => {
+              this.player.setAudioTrack(t);
+            })
+          }, (t: AudioTrack) => `a-${t.id}`)
+        }
 
-        this.sectionTitle('字幕')
-        this.trackRow(this.player.state.track.subs.id === 'auto', '自动', () => {
-          this.player.setSubtitleTrack(SubtitleTrack.auto());
-        })
-        this.trackRow(this.player.state.track.subs.id === 'no', '关闭字幕', () => {
-          this.player.disableSubtitleTrack();
-        })
-        ForEach(this.player.state.tracks.subs, (t: SubtitleTrack) => {
-          this.trackRow(this.player.state.track.subs.id === t.id, this.trackLabel(t.title, t.lang, t.codec), () => {
-            this.player.setSubtitleTrack(t);
+        if (this.showSubs()) {
+          this.sectionTitle('字幕')
+          this.trackRow(this.player.state.track.subs.id === 'auto', '自动', () => {
+            this.player.setSubtitleTrack(SubtitleTrack.auto());
           })
-        }, (t: SubtitleTrack) => `s-${t.id}`)
+          this.trackRow(this.player.state.track.subs.id === 'no', '关闭字幕', () => {
+            this.player.disableSubtitleTrack();
+          })
+          ForEach(this.player.state.tracks.subs, (t: SubtitleTrack) => {
+            this.trackRow(this.player.state.track.subs.id === t.id, this.trackLabel(t.title, t.lang, t.codec), () => {
+              this.player.setSubtitleTrack(t);
+            })
+          }, (t: SubtitleTrack) => `s-${t.id}`)
+        }
 
         this.sectionTitle('外挂轨道')
-        this.actionRow('加载外挂字幕（srt/ass/vtt…）', () => this.pickExternal(true))
-        this.actionRow('加载外挂音轨（aac/flac/mp3…）', () => this.pickExternal(false))
+        if (this.showSubs()) {
+          this.actionRow('加载外挂字幕（srt/ass/vtt…）', () => this.pickExternal(true))
+        }
+        if (this.showAudio()) {
+          this.actionRow('加载外挂音轨（aac/flac/mp3…）', () => this.pickExternal(false))
+        }
       }
       .constraintSize({ minHeight: '100%' })
       .alignItems(HorizontalAlign.Start)

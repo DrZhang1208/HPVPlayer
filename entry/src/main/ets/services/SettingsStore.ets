@@ -35,6 +35,8 @@ export interface ScrapeConfig {
   apiKey: string;
   /** TMDB API 域名，默认 api.themoviedb.org，可填镜像 */
   baseUrl: string;
+  /** 动漫优先用 Bangumi（番组计划）刮削，miss 回落 TMDB */
+  bangumiEnabled: boolean;
 }
 
 const KEY_SERVERS = 'webdav_servers';
@@ -134,7 +136,7 @@ export class SettingsStore {
   static async getScrapeConfig(): Promise<ScrapeConfig> {
     const raw = (await SettingsStore.store?.get(KEY_SCRAPE, '')) as string;
     if (raw === '') {
-      return { enabled: true, apiKey: '', baseUrl: 'api.themoviedb.org' };
+      return { enabled: true, apiKey: '', baseUrl: 'api.themoviedb.org', bangumiEnabled: true };
     }
     try {
       const parsed = JSON.parse(raw) as ScrapeConfig;
@@ -143,9 +145,10 @@ export class SettingsStore {
         apiKey: parsed.apiKey ?? '',
         baseUrl: parsed.baseUrl !== undefined && parsed.baseUrl.length > 0 ?
           parsed.baseUrl : 'api.themoviedb.org',
+        bangumiEnabled: parsed.bangumiEnabled ?? true,
       };
     } catch (err) {
-      return { enabled: true, apiKey: '', baseUrl: 'api.themoviedb.org' };
+      return { enabled: true, apiKey: '', baseUrl: 'api.themoviedb.org', bangumiEnabled: true };
     }
   }
 

@@ -11,6 +11,7 @@ export class NavRoutes {
   static readonly PLAYER = 'PlayerPage';
   static readonly WEBDAV = 'WebDavPage';
   static readonly DETAIL = 'DetailPage';
+  static readonly CONFIG_BROWSER = 'ConfigBrowserPage';
 }
 
 /** WebDavPage 浏览参数 */
@@ -34,6 +35,23 @@ class TabSignal {
 }
 
 export const tabSignal: TabSignal = new TabSignal();
+
+/** 媒体库数据变更信号（刮削/手动匹配后通知海报墙刷新） */
+class LibraryDirtySignal {
+  private listeners: Array<() => void> = [];
+
+  on(listener: () => void): void {
+    this.listeners.push(listener);
+  }
+
+  emit(): void {
+    for (const l of this.listeners) {
+      l();
+    }
+  }
+}
+
+export const libraryDirty: LibraryDirtySignal = new LibraryDirtySignal();
 
 /** Tab 索引约定 */
 export class TabIndex {

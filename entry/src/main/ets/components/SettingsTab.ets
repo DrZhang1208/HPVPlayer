@@ -9,7 +9,7 @@ import {
   BUILTIN_SCRIPTS, MpvConfigManager, ScriptEntry
 } from '../services/MpvConfigManager';
 import { PlayerPreferences, ScrapeConfig, SettingsStore } from '../services/SettingsStore';
-import { PlayLauncher } from '../services/PlayLauncher';
+import { appNav, NavRoutes } from '../services/AppNav';
 
 const DOMAIN = 0x0000;
 
@@ -21,6 +21,15 @@ export struct SettingsTab {
   @Local scrapeEnabled: boolean = true;
   @Local scrapeKey: string = '';
   @Local scrapeBase: string = 'api.themoviedb.org';
+  @Local bangumiEnabled: boolean = true;
+  // 弹幕设置（写入 script-opts/danmaku.conf）
+  @Local danmakuApi: string = '';
+  @Local danmakuFallback: string = '';
+  @Local danmakuFontSize: string = '50';
+  @Local danmakuOpacity: string = '0.7';
+  @Local danmakuDisplayArea: string = '0.85';
+  @Local danmakuScrollTime: string = '15';
+  @Local danmakuChConvert: number = 0;
   @Local confText: string = '';
   @Local confDirty: boolean = false;
   @Local confPath: string = '';
@@ -35,11 +44,7 @@ export struct SettingsTab {
   // 内置脚本市场弹层
   @Local showBuiltin: boolean = false;
   // script-opts 弹层
-  @Local showOpts: boolean = false;
   @Local optsNames: string[] = [];
-  @Local showOptEditor: boolean = false;
-  @Local optName: string = '';
-  @Local optText: string = '';
   // 新建脚本弹层
   @Local showNewScript: boolean = false;
   @Local newScriptName: string = '';
@@ -59,11 +64,13 @@ export struct SettingsTab {
       this.scrapeEnabled = scrape.enabled;
       this.scrapeKey = scrape.apiKey;
       this.scrapeBase = scrape.baseUrl;
+      this.bangumiEnabled = scrape.bangumiEnabled;
     });
     this.confPath = MpvConfigManager.ensureConfigDir(context) + '/mpv.conf';
     this.confText = MpvConfigManager.readConf(context);
     this.scriptsDir = MpvConfigManager.configDir(context) + '/scripts';
     this.reloadScripts();
+    this.loadDanmakuConf();
   }
 
   private reloadScripts(): void {
@@ -89,6 +96,7 @@ export struct SettingsTab {
       enabled: this.scrapeEnabled,
       apiKey: this.scrapeKey.trim(),
       baseUrl: this.scrapeBase.trim().length > 0 ? this.scrapeBase.trim() : 'api.themoviedb.org',
+      bangumiEnabled: this.bangumiEnabled,
     };
     this.scrapeBase = config.baseUrl;
     await SettingsStore.setScrapeConfig(config);
@@ -100,6 +108,37 @@ export struct SettingsTab {
     MpvConfigManager.saveConf(context, this.confText);
     this.confDirty = false;
     this.toast('mpv.conf 已保存，下次播放生效');
+  }
+
+  private async exportConfig(): Promise<void> {
+    try {
+      const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      const ok = await MpvConfigManager.exportConfig(context);
+      if (ok) {
+        this.toast('已导出。可在文件管理器中解压编辑 mpv.conf 与脚本');
+      }
+    } catch (err) {
+      hilog.error(DOMAIN, 'HPVPlayer', 'export config failed: %{public}s', JSON.stringify(err));
+      this.toast(`导出失败: ${(err as Error).message}`);
+    }
+  }
+
+  private async importConfig(): Promise<void> {
+    try {
+      const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      const count = await MpvConfigManager.importConfig(context);
+      if (count < 0) {
+        return; // 用户取消
+      }
+      // 重新加载到界面
+      this.confText = MpvConfigManager.readConf(context);
+      this.confDirty = false;
+      this.reloadScripts();
+      this.toast(`已导入 ${count} 个文件，下次播放生效`);
+    } catch (err) {
+      hilog.error(DOMAIN, 'HPVPlayer', 'import config failed: %{public}s', JSON.stringify(err));
+      this.toast(`导入失败: ${(err as Error).message}`);
+    }
   }
 
   private resetConf(): void {
@@ -115,6 +154,7 @@ export struct SettingsTab {
     try {
       const docPicker = new picker.DocumentViewPicker();
       const result: string[] = await docPicker.select({
+        selectMode: picker.DocumentSelectMode.MIXED,
         fileSuffixFilters: ['.lua'],
         maxSelectNumber: 20,
       });
@@ -122,14 +162,24 @@ export struct SettingsTab {
         return;
       }
       const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
-      let count = 0;
+      const summaries: string[] = [];
       for (const uri of result) {
-        const name = PlayLauncher.baseName(uri);
-        MpvConfigManager.importScript(context, uri, name);
-        count++;
+        // displayName 取最后一段（文件夹名或文件名）
+        let display = uri.substring(uri.lastIndexOf('/') + 1);
+        try {
+          display = decodeURIComponent(display);
+        } catch (err) {
+          // 保留原样
+        }
+        try {
+          summaries.push(MpvConfigManager.importSmart(context, uri, display));
+        } catch (err) {
+          summaries.push(`${display}: ${(err as Error).message}`);
+        }
       }
       this.reloadScripts();
-      this.toast(`已导入 ${count} 个脚本`);
+      this.getUIContext().getPromptAction()
+        .showToast({ message: summaries.join('；').substring(0, 100) });
     } catch (err) {
       hilog.error(DOMAIN, 'HPVPlayer', 'import script failed: %{public}s', JSON.stringify(err));
     }
@@ -175,30 +225,6 @@ export struct SettingsTab {
     this.toast(ok ? `已安装 ${script.name}` : `${script.name} 已存在`);
   }
 
-  // ---------- script-opts ----------
-
-  private openOptEditor(name: string): void {
-    const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
-    this.optName = name;
-    this.optText = MpvConfigManager.readScriptOpt(context, name);
-    this.showOptEditor = true;
-  }
-
-  private createOpt(): void {
-    let name = this.optName.trim();
-    if (name.length === 0) {
-      this.toast('请输入配置名');
-      return;
-    }
-    if (!name.endsWith('.conf')) {
-      name = name + '.conf';
-    }
-    const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
-    MpvConfigManager.writeScriptOpt(context, name, this.optText);
-    this.reloadScripts();
-    this.showOptEditor = false;
-    this.toast(`已保存 ${name}`);
-  }
 
   // ---------- 构建 ----------
 
@@ -287,36 +313,6 @@ export struct SettingsTab {
     .margin({ bottom: 6 })
   }
 
-  @Builder
-  optRow(name: string) {
-    Row({ space: 12 }) {
-      SymbolGlyph($r('sys.symbol.doc_plaintext'))
-        .fontSize(20)
-        .fontColor([$r('app.color.brand')])
-      Text(name)
-        .fontSize(16)
-        .fontColor($r('app.color.text_primary'))
-        .layoutWeight(1)
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .onClick(() => this.openOptEditor(name))
-      Text('删除')
-        .fontSize(13)
-        .fontColor($r('app.color.warning'))
-        .padding(6)
-        .onClick(() => {
-          const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
-          MpvConfigManager.deleteScriptOpt(context, name);
-          this.reloadScripts();
-          this.toast('已删除');
-        })
-    }
-    .width('100%')
-    .padding(14)
-    .borderRadius(12)
-    .backgroundColor($r('app.color.input_background'))
-    .margin({ bottom: 6 })
-  }
 
   @Builder
   scriptEditorSheet() {
@@ -408,98 +404,114 @@ export struct SettingsTab {
     .padding({ left: 20, right: 20 })
   }
 
-  @Builder
-  optsSheet() {
-    Column({ space: 8 }) {
-      Text('脚本配置 (script-opts)')
-        .fontSize(17)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-        .margin({ top: 4, bottom: 4 })
-      Scroll() {
-        Column() {
-          if (this.optsNames.length === 0) {
-            Text('暂无脚本配置。脚本通过 mp.options 读取同名 .conf 文件。')
-              .fontSize(13)
-              .fontColor($r('app.color.text_secondary'))
-              .width('100%')
-              .padding({ top: 4, bottom: 4 })
-          }
-          ForEach(this.optsNames, (name: string) => {
-            this.optRow(name)
-          }, (name: string) => name)
-        }
-        .width('100%')
+
+  /** 从文件选择器导入 .conf 到 script-opts/ */
+  private async importScriptOpt(): Promise<void> {
+    try {
+      const docPicker = new picker.DocumentViewPicker();
+      const result: string[] = await docPicker.select({
+        fileSuffixFilters: ['.conf'],
+        maxSelectNumber: 20,
+      });
+      if (result.length === 0) {
+        return;
       }
-      .scrollBar(BarState.Off)
-      .layoutWeight(1)
-      Button('新建配置')
-        .height(44)
-        .fontSize(16)
-        .fontWeight(FontWeight.Medium)
-        .width('100%')
-        .backgroundColor($r('app.color.brand'))
-        .fontColor($r('app.color.text_on_brand'))
-        .borderRadius(22)
-        .margin({ top: 8 })
-        .onClick(() => {
-          this.optName = '';
-          this.optText = '';
-          this.showOptEditor = true;
-        })
+      const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      let count = 0;
+      for (const uri of result) {
+        let display = uri.substring(uri.lastIndexOf('/') + 1);
+        try {
+          display = decodeURIComponent(display);
+        } catch (err) {
+          // 保留原样
+        }
+        if (!display.toLowerCase().endsWith('.conf')) {
+          display = display + '.conf';
+        }
+        const text = MpvConfigManager.readUriText(uri);
+        if (text.length === 0) {
+          continue;
+        }
+        MpvConfigManager.writeScriptOpt(context, display, text);
+        count++;
+      }
+      this.reloadScripts();
+      this.toast(`已导入 ${count} 个配置到 script-opts，下次播放生效`);
+    } catch (err) {
+      hilog.error(DOMAIN, 'HPVPlayer', 'import opt failed: %{public}s', JSON.stringify(err));
     }
-    .width('100%')
-    .height('100%')
-    .padding({ left: 20, right: 20, bottom: 24 })
   }
 
-  @Builder
-  optEditorSheet() {
-    Column({ space: 12 }) {
-      Text(this.optName.length > 0 ? this.optName : '新建脚本配置')
-        .fontSize(17)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-        .margin({ top: 4 })
-      if (this.optName === '') {
-        TextInput({ text: this.optName, placeholder: '配置名（如 autoload）' })
-          .height(48)
-          .fontSize(16)
-          .backgroundColor($r('app.color.input_background'))
-          .fontColor($r('app.color.text_primary'))
-          .placeholderColor($r('app.color.text_tertiary'))
-          .borderRadius(12)
-          .onChange((v: string) => {
-            this.optName = v;
-          })
+  // ---------- 弹幕设置（script-opts/danmaku.conf） ----------
+
+  private loadDanmakuConf(): void {
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    try {
+      const text = MpvConfigManager.readScriptOpt(context, 'danmaku.conf');
+      if (text.length === 0) {
+        this.danmakuApi = '';
+        this.danmakuFallback = '';
+        return;
       }
-      TextArea({ text: this.optText, placeholder: '# key=value 格式' })
-        .height(240)
-        .fontSize(12)
-        .fontFamily('monospace')
-        .backgroundColor($r('app.color.input_background'))
-        .fontColor($r('app.color.text_primary'))
-        .borderRadius(12)
-        .onChange((v: string) => {
-          this.optText = v;
-        })
-      Button('保存')
-        .height(44)
-        .fontSize(16)
-        .fontWeight(FontWeight.Medium)
-        .width('100%')
-        .backgroundColor($r('app.color.brand'))
-        .fontColor($r('app.color.text_on_brand'))
-        .borderRadius(22)
-        .margin({ bottom: 28 })
-        .onClick(() => this.createOpt())
+      for (const line of text.split('\n')) {
+        const m = line.match(/^\s*([a-zA-Z_]+)\s*=\s*(.*)$/);
+        if (m === null) {
+          continue;
+        }
+        const key = m[1];
+        let value = m[2].trim().replace(/^["']|["']$/g, '');
+        if (key === 'api_server' && this.danmakuApi === '') {
+          this.danmakuApi = value.split(',')[0].split('|')[0].split('#')[0].trim();
+        } else if (key === 'fallback_server' && this.danmakuFallback === '') {
+          this.danmakuFallback = value;
+        } else if (key === 'fontsize') {
+          this.danmakuFontSize = value;
+        } else if (key === 'opacity') {
+          this.danmakuOpacity = value;
+        } else if (key === 'displayarea') {
+          this.danmakuDisplayArea = value;
+        } else if (key === 'scrolltime') {
+          this.danmakuScrollTime = value;
+        } else if (key === 'chConvert') {
+          this.danmakuChConvert = parseInt(value) || 0;
+        }
+      }
+    } catch (err) {
+      // 无配置文件，用默认
     }
-    .width('100%')
-    .padding({ left: 20, right: 20 })
+  }
+
+  /** 弹幕服务器输入归一化：裸域名补 https://（脚本 HTTP 桥只认完整 URL） */
+  private normalizeServerInput(v: string): string {
+    const t = v.trim();
+    if (t.length === 0 || t.startsWith('http://') || t.startsWith('https://')) {
+      return t;
+    }
+    return `https://${t}`;
+  }
+
+  private saveDanmakuConf(): void {
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    const lines: string[] = [
+      '# HPVPlayer 生成：danmaku 脚本配置（优先级高于脚本默认值）',
+      this.danmakuApi.trim().length > 0 ? `api_server=${this.normalizeServerInput(this.danmakuApi)}` : '',
+      this.danmakuFallback.trim().length > 0 ? `fallback_server=${this.normalizeServerInput(this.danmakuFallback)}` : '',
+      `fontsize=${this.danmakuFontSize.trim() || '50'}`,
+      `opacity=${this.danmakuOpacity.trim() || '0.7'}`,
+      `displayarea=${this.danmakuDisplayArea.trim() || '0.85'}`,
+      `scrolltime=${this.danmakuScrollTime.trim() || '15'}`,
+      `chConvert=${this.danmakuChConvert}`,
+    ];
+    const text = lines.filter((l: string) => l.length > 0).join('\n') + '\n';
+    MpvConfigManager.writeScriptOpt(context, 'danmaku.conf', text);
+    this.toast('弹幕配置已保存，下次播放生效');
   }
 
   build() {
-    Scroll() {
+    // 同一节点重复 bindSheet 会相互冲突（ArkUI 属性方法重复绑定），
+    // 拆两层 Stack 分散绑定
+    Stack() {
+      Scroll() {
       Column() {
         // ===== 播放偏好 =====
         this.sectionTitle('播放偏好')
@@ -575,8 +587,8 @@ export struct SettingsTab {
         .borderRadius(16)
         .backgroundColor($r('app.color.card_background'))
 
-        // ===== 刮削 (TMDB) =====
-        this.sectionTitle('刮削 (TMDB)')
+        // ===== 刮削 =====
+        this.sectionTitle('刮削')
         Column({ space: 14 }) {
           Row() {
             Column({ space: 2 }) {
@@ -596,9 +608,29 @@ export struct SettingsTab {
           }
           .width('100%')
 
+          Row() {
+            Column({ space: 2 }) {
+              Text('动漫优先 Bangumi')
+                .fontSize(16)
+                .fontColor($r('app.color.text_primary'))
+              Text('番组计划开放数据，无需 Key，国内动漫匹配更准')
+                .fontSize(12)
+                .fontColor($r('app.color.text_secondary'))
+            }
+            .alignItems(HorizontalAlign.Start)
+            .layoutWeight(1)
+            Toggle({ type: ToggleType.Switch, isOn: this.bangumiEnabled })
+              .onChange((on: boolean) => {
+                this.bangumiEnabled = on;
+              })
+          }
+          .width('100%')
+
           TextInput({ text: this.scrapeKey, placeholder: 'TMDB API Key（v3）' })
             .height(48)
             .fontSize(16)
+            .type(InputType.Password)
+            .showPasswordIcon(true)
             .backgroundColor($r('app.color.input_background'))
             .fontColor($r('app.color.text_primary'))
             .placeholderColor($r('app.color.text_tertiary'))
@@ -672,7 +704,34 @@ export struct SettingsTab {
               .onClick(() => this.resetConf())
           }
           .width('100%')
-          Text('支持 mpv 标准配置语法（音量、缓存、字幕样式、着色器等）。脚本消息 (script-message) 会透传到播放器界面。')
+          Row({ space: 12 }) {
+            Button('配置管理')
+              .height(40)
+              .fontSize(14)
+              .layoutWeight(1)
+              .backgroundColor($r('app.color.brand'))
+              .fontColor($r('app.color.text_on_brand'))
+              .borderRadius(20)
+              .onClick(() => appNav.pushPath({ name: NavRoutes.CONFIG_BROWSER }))
+            Button('导出到文件管理器')
+              .height(40)
+              .fontSize(14)
+              .layoutWeight(1)
+              .backgroundColor($r('app.color.brand_light'))
+              .fontColor($r('app.color.brand'))
+              .borderRadius(20)
+              .onClick(() => this.exportConfig())
+            Button('从文件导入')
+              .height(40)
+              .fontSize(14)
+              .layoutWeight(1)
+              .backgroundColor($r('app.color.brand_light'))
+              .fontColor($r('app.color.brand'))
+              .borderRadius(20)
+              .onClick(() => this.importConfig())
+          }
+          .width('100%')
+          Text('导出会把 mpv.conf、脚本与配置打包为 zip，可在文件管理器/电脑上解压编辑后导入。')
             .fontSize(12)
             .fontColor($r('app.color.text_tertiary'))
             .width('100%')
@@ -725,25 +784,151 @@ export struct SettingsTab {
               .onClick(() => {
                 this.showBuiltin = true;
               })
-            Button('脚本配置')
+            Button('导入配置')
               .height(40)
               .fontSize(14)
               .layoutWeight(1)
               .backgroundColor($r('app.color.brand_light'))
               .fontColor($r('app.color.brand'))
               .borderRadius(20)
-              .onClick(() => {
-                this.showOpts = true;
-              })
+              .onClick(() => this.importScriptOpt())
           }
           .width('100%')
           .margin({ top: 4 })
 
-          Text(`脚本目录: ${this.scriptsDir}\n点击脚本名可查看/编辑内容；停用的脚本不会加载。`)
+          Text(`脚本目录: ${this.scriptsDir}\n支持单个 .lua 文件或整个脚本包文件夹（保持内部结构，\n自动提取 script-opts 配置）；点击脚本名可查看/编辑。`)
             .fontSize(12)
             .fontColor($r('app.color.text_tertiary'))
             .width('100%')
             .margin({ top: 4 })
+        }
+        .width('100%')
+        .padding(16)
+        .borderRadius(16)
+        .backgroundColor($r('app.color.card_background'))
+
+        // ===== 弹幕 =====
+        this.sectionTitle('弹幕')
+        Column({ space: 14 }) {
+          TextInput({ text: this.danmakuApi, placeholder: '弹幕 API 服务器（默认内置公共源）' })
+            .height(48)
+            .fontSize(15)
+            .backgroundColor($r('app.color.input_background'))
+            .fontColor($r('app.color.text_primary'))
+            .placeholderColor($r('app.color.text_tertiary'))
+            .borderRadius(12)
+            .onChange((v: string) => {
+              this.danmakuApi = v;
+            })
+          TextInput({ text: this.danmakuFallback, placeholder: '兜底服务器（B站/爱腾优非动画弹幕）' })
+            .height(48)
+            .fontSize(15)
+            .backgroundColor($r('app.color.input_background'))
+            .fontColor($r('app.color.text_primary'))
+            .placeholderColor($r('app.color.text_tertiary'))
+            .borderRadius(12)
+            .onChange((v: string) => {
+              this.danmakuFallback = v;
+            })
+
+          Row({ space: 10 }) {
+            Text('字号')
+              .fontSize(15)
+              .fontColor($r('app.color.text_primary'))
+            TextInput({ text: this.danmakuFontSize })
+              .height(40)
+              .fontSize(14)
+              .backgroundColor($r('app.color.input_background'))
+              .fontColor($r('app.color.text_primary'))
+              .borderRadius(8)
+              .width(90)
+              .type(InputType.Number)
+              .onChange((v: string) => {
+                this.danmakuFontSize = v;
+              })
+            Text('透明度')
+              .fontSize(15)
+              .fontColor($r('app.color.text_primary'))
+              .margin({ left: 8 })
+            TextInput({ text: this.danmakuOpacity })
+              .height(40)
+              .fontSize(14)
+              .backgroundColor($r('app.color.input_background'))
+              .fontColor($r('app.color.text_primary'))
+              .borderRadius(8)
+              .width(90)
+              .onChange((v: string) => {
+                this.danmakuOpacity = v;
+              })
+          }
+          .width('100%')
+
+          Row({ space: 10 }) {
+            Text('显示范围')
+              .fontSize(15)
+              .fontColor($r('app.color.text_primary'))
+            TextInput({ text: this.danmakuDisplayArea })
+              .height(40)
+              .fontSize(14)
+              .backgroundColor($r('app.color.input_background'))
+              .fontColor($r('app.color.text_primary'))
+              .borderRadius(8)
+              .width(90)
+              .onChange((v: string) => {
+                this.danmakuDisplayArea = v;
+              })
+            Text('滚动秒数')
+              .fontSize(15)
+              .fontColor($r('app.color.text_primary'))
+              .margin({ left: 8 })
+            TextInput({ text: this.danmakuScrollTime })
+              .height(40)
+              .fontSize(14)
+              .backgroundColor($r('app.color.input_background'))
+              .fontColor($r('app.color.text_primary'))
+              .borderRadius(8)
+              .width(90)
+              .type(InputType.Number)
+              .onChange((v: string) => {
+                this.danmakuScrollTime = v;
+              })
+          }
+          .width('100%')
+
+          Row({ space: 8 }) {
+            Text('简繁转换')
+              .fontSize(15)
+              .fontColor($r('app.color.text_primary'))
+              .layoutWeight(1)
+            ForEach([0, 1, 2], (mode: number) => {
+              Text(mode === 0 ? '不转换' : mode === 1 ? '简体' : '繁体')
+                .fontSize(13)
+                .fontColor(this.danmakuChConvert === mode ?
+                  $r('app.color.brand') : $r('app.color.text_secondary'))
+                .padding({ left: 12, right: 12, top: 8, bottom: 8 })
+                .borderRadius(16)
+                .backgroundColor(this.danmakuChConvert === mode ?
+                  $r('app.color.chip_background') : $r('app.color.input_background'))
+                .onClick(() => {
+                  this.danmakuChConvert = mode;
+                })
+            }, (mode: number) => `${mode}`)
+          }
+          .width('100%')
+
+          Button('保存弹幕配置')
+            .height(44)
+            .fontSize(16)
+            .fontWeight(FontWeight.Medium)
+            .width('100%')
+            .backgroundColor($r('app.color.brand'))
+            .fontColor($r('app.color.text_on_brand'))
+            .borderRadius(22)
+            .onClick(() => this.saveDanmakuConf())
+          Text('服务器需兼容 dandanplay API；完整选项可在「配置管理」中编辑 script-opts/danmaku.conf。')
+            .fontSize(12)
+            .fontColor($r('app.color.text_tertiary'))
+            .width('100%')
         }
         .width('100%')
         .padding(16)
@@ -789,26 +974,16 @@ export struct SettingsTab {
       backgroundColor: $r('app.color.card_background'),
       title: { title: '内置脚本' },
     })
+    }
+    .width('100%')
+    .height('100%')
+    .backgroundColor($r('app.color.page_background'))
     .bindSheet($$this.showNewScript, this.newScriptSheet(), {
       height: SheetSize.FIT_CONTENT,
       dragBar: true,
       showClose: true,
       backgroundColor: $r('app.color.card_background'),
       title: { title: '新建脚本' },
-    })
-    .bindSheet($$this.showOpts, this.optsSheet(), {
-      height: SheetSize.MEDIUM,
-      dragBar: true,
-      showClose: true,
-      backgroundColor: $r('app.color.card_background'),
-      title: { title: '脚本配置' },
-    })
-    .bindSheet($$this.showOptEditor, this.optEditorSheet(), {
-      height: SheetSize.LARGE,
-      dragBar: true,
-      showClose: true,
-      backgroundColor: $r('app.color.card_background'),
-      title: { title: '编辑配置' },
     })
   }
 }

@@ -127,6 +127,27 @@ function cleanTitle(s: string): string {
 
 export class NameParser {
   /**
+   * 猜测是否动漫/番剧（启发式：字幕组标记、1080p 前的日文/罗马音特征、
+   * 常见动漫发布组关键词）。仅用于刮削源选择，不影响入库。
+   */
+  static looksLikeAnime(fileName: string, title: string): boolean {
+    const n = fileName.toLowerCase();
+    // 常见动漫发布标记
+    if (/(字幕组|喵萌|爱恋|幻樱|澄空|雪飘|LoliHouse|SweetSub|VCB-Studio|ANi|片源)/i.test(n)) {
+      return true;
+    }
+    // Baha/GLOBAL 动漫流媒体标记
+    if (/(baha|bilibili|crunchyroll|b[-_.]global|i[-_.]global)/i.test(n)) {
+      return true;
+    }
+    // 标题含日文假名
+    if (/[\u3040-\u309f\u30a0-\u30ff]/.test(title)) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * 解析文件名（不含扩展名）。
    */
   static parse(fileName: string): ParsedName {

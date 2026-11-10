@@ -7,9 +7,10 @@ import { SymbolGlyphModifier } from '@kit.ArkUI';
 import { LibraryTab } from '../components/LibraryTab';
 import { SourcesTab } from '../components/SourcesTab';
 import { SettingsTab } from '../components/SettingsTab';
-import { appNav, NavRoutes, tabSignal } from '../services/AppNav';
+import { appNav, NavRoutes, tabSignal, TabIndex, libraryDirty } from '../services/AppNav';
 import { DetailPage } from './DetailPage';
 import { WebDavPage } from './WebDavPage';
+import { ConfigBrowserPage } from './ConfigBrowserPage';
 
 interface TabSymbolStyle {
   normal: SymbolGlyphModifier;
@@ -48,6 +49,8 @@ struct Index {
       WebDavPage()
     } else if (name === NavRoutes.DETAIL) {
       DetailPage()
+    } else if (name === NavRoutes.CONFIG_BROWSER) {
+      ConfigBrowserPage()
     }
   }
 
@@ -74,6 +77,9 @@ struct Index {
       .scrollable(false)
       .onChange((index: number) => {
         this.currentTab = index;
+        if (index === TabIndex.LIBRARY) {
+          libraryDirty.emit(); // 切回媒体库时刷新海报墙
+        }
       })
       .width('100%')
       .height('100%')

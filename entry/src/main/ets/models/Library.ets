@@ -36,6 +36,8 @@ export interface VideoItem {
   year?: number;
   season?: number;
   episode?: number;
+  /** TMDB 匹配到的集标题（剧集） */
+  episodeTitle?: string;
   kind: ItemKind;
   /** 刮削状态 */
   matched: boolean;
@@ -44,6 +46,12 @@ export interface VideoItem {
   overview?: string;
   rating?: number;
   releaseDate?: string;
+  /** 演员表（前 N 位，"名字 饰 角色"） */
+  cast?: string[];
+  /** 电影时长/剧集单集时长（分钟） */
+  runtime?: number;
+  /** 类型标签（动作/科幻…） */
+  genres?: string[];
   /** 沙箱内的海报/背景图文件路径 */
   posterFile?: string;
   backdropFile?: string;
@@ -68,6 +76,12 @@ export interface LibraryGroup {
   posterFile: string;
   items: VideoItem[];
   addedTs: number;
+  /** 聚合的元数据（取组内首个非空） */
+  overview: string;
+  rating: number;
+  cast: string[];
+  runtime: number;
+  genres: string[];
 }
 
 export function sourceItemCount(items: VideoItem[], sourceId: string): number {

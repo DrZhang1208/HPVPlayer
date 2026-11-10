@@ -55,6 +55,25 @@ function docsUriToPath(uri: string): string {
   }
 }
 
+/** 仅用于进度展示：解码 %XX 中文；完整 URL 太长时只保留路径段 */
+function displayPath(url: string): string {
+  let text = url;
+  try {
+    text = decodeURIComponent(url);
+  } catch (err) {
+    // 保留原样
+  }
+  // 去掉协议与主机，只留路径，避免进度行过长
+  const schemeIdx = text.indexOf('://');
+  if (schemeIdx > 0) {
+    const slashIdx = text.indexOf('/', schemeIdx + 3);
+    if (slashIdx > 0) {
+      text = text.substring(slashIdx + 3, slashIdx) + text.substring(slashIdx);
+    }
+  }
+  return text;
+}
+
 export class Scanner {
   static async scan(source: MediaSource,
     onProgress?: (p: ScanProgress) => void): Promise<ScanResult> {
@@ -86,7 +105,7 @@ export class Scanner {
       const dir = queue.shift()!;
       dirCount++;
       if (onProgress !== undefined) {
-        onProgress({ found: items.length, current: dir });
+        onProgress({ found: items.length, current: displayPath(dir) });
       }
       const children = Scanner.listDir(dir);
       for (const child of children) {
@@ -180,7 +199,7 @@ export class Scanner {
       const next = queue.shift()!;
       dirCount++;
       if (onProgress !== undefined) {
-        onProgress({ found: items.length, current: next.url });
+        onProgress({ found: items.length, current: displayPath(next.url) });
       }
       const entries: DavEntry[] = await WebDavClient.propfind(server, next.url);
       for (const entry of entries) {

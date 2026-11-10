@@ -9,6 +9,11 @@
 import { util } from '@kit.ArkTS';
 import fs from '@ohos.file.fs';
 import { common } from '@kit.AbilityKit';
+import zlib from '@ohos.zlib';
+import { picker } from '@kit.CoreFileKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+
+const DOMAIN = 0x0000;
 
 export interface ScriptEntry {
   /** 展示名，如 autoload.lua */
@@ -16,6 +21,16 @@ export interface ScriptEntry {
   /** 完整沙箱路径 */
   path: string;
   enabled: boolean;
+}
+
+/** 配置文件管理器条目（相对 mpv 配置根） */
+export interface ConfigFileEntry {
+  name: string;
+  /** 相对配置根路径（目录树用） */
+  path: string;
+  isDir: boolean;
+  size: number;
+  mtime: number;
 }
 
 /** 内置可一键安装的 Lua 脚本（mpv 官方 TOOLS/lua 精简版） */
@@ -139,6 +154,9 @@ export class MpvConfigManager {
   static readonly SCRIPTS_DIR = 'scripts';
   static readonly SCRIPT_OPTS_DIR = 'script-opts';
   static readonly OFF_EXT = '.off';
+  /** 内置弹幕脚本修订号：调整 rawfile/danmaku 内容时递增，触发已安装旧版自动替换 */
+  static readonly DANMAKU_REV = '4';
+  static readonly DANMAKU_REV_FILE = '.hpv-rev';
 
   /**
    * 确保 mpv 配置目录结构就绪，返回 configDir（传入 PlayerConfig）。
@@ -166,6 +184,409 @@ export class MpvConfigManager {
     return context.filesDir + '/mpv';
   }
 
+  // ---------- 导出 / 导入（用户在文件管理器中手动编辑配置的桥梁） ----------
+
+  /**
+   * 安装/升级内置弹幕脚本（rawfile/danmaku → scripts/danmaku/，递归释放）。
+   *
+   * 版本策略见 danmakuNeedsUpgrade：目标目录带 .hpv-rev 标记且不低于内置修订号 → 跳过；
+   * 其余（标记落后，或无标记但形如 uosc_danmaku 的旧内置安装）→ 整目录替换升级。
+   * 用户数据（script-opts/danmaku.conf、~~/danmaku-history.json）不在该目录内，替换无副作用。
+   * @returns true 本次实际安装/升级；false 已是最新
+   */
+  static installDanmaku(context: common.UIAbilityContext): boolean {
+    const target = MpvConfigManager.configDir(context) + '/scripts/danmaku';
+    if (fs.accessSync(target)) {
+      if (!MpvConfigManager.danmakuNeedsUpgrade(target)) {
+        hilog.info(DOMAIN, 'HPVPlayer', 'installDanmaku: up-to-date, skip');
+        return false;
+      }
+      hilog.info(DOMAIN, 'HPVPlayer', 'installDanmaku: upgrading, replace dir');
+      MpvConfigManager.removeDirRecursive(target);
+    }
+    MpvConfigManager.ensureDir(target);
+    const files: string[] = [];
+    const dirs: string[] = [];
+    MpvConfigManager.listRawfileTree(context, 'danmaku', '', dirs, files);
+    for (const dir of dirs) {
+      MpvConfigManager.ensureDir(target + '/' + dir);
+    }
+    let copied = 0;
+    for (const file of files) {
+      const raw = context.resourceManager.getRawFileContentSync(`danmaku/${file}`);
+      const text = util.TextDecoder.create('utf-8').decodeToString(raw);
+      MpvConfigManager.copyTextTo(text, target + '/' + file);
+      copied++;
+    }
+    MpvConfigManager.copyTextTo(MpvConfigManager.DANMAKU_REV, target + '/' + MpvConfigManager.DANMAKU_REV_FILE);
+    hilog.info(DOMAIN, 'HPVPlayer', 'installDanmaku: installed rev=%{public}s dirs=%{public}d files=%{public}d',
+      MpvConfigManager.DANMAKU_REV, dirs.length, copied);
+    return true;
+  }
+
+  /**
+   * 已安装的内置弹幕脚本是否需要升级到内置修订号。
+   * 有 .hpv-rev 标记：按修订号比较；
+   * 无标记：目录结构形如 uosc_danmaku（main.lua + modules/utils.lua）即视为
+   * 加桥之前安装的旧内置版本（早期构建无指纹无标记），强制替换。
+   * （"danmaku" 目录名归 App 内置脚本所有；用户自定义导入请用其它目录名）
+   */
+  private static danmakuNeedsUpgrade(target: string): boolean {
+    const revPath = target + '/' + MpvConfigManager.DANMAKU_REV_FILE;
+    if (fs.accessSync(revPath)) {
+      try {
+        const installed = Number(fs.readTextSync(revPath).trim());
+        return Number.isNaN(installed) ||
+          installed < Number(MpvConfigManager.DANMAKU_REV);
+      } catch (err) {
+        return true;
+      }
+    }
+    try {
+      return fs.accessSync(target + '/main.lua') &&
+        fs.accessSync(target + '/modules/utils.lua');
+    } catch (err) {
+      return false;
+    }
+  }
+
+  /** 内置弹幕脚本是否已安装 */
+  static hasDanmaku(context: common.UIAbilityContext): boolean {
+    return fs.accessSync(MpvConfigManager.configDir(context) + '/scripts/danmaku/main.lua');
+  }
+
+  /** 枚举 rawfile 目录树（递归） */
+  private static listRawfileTree(context: common.UIAbilityContext, root: string,
+    rel: string, dirs: string[], files: string[]): void {
+    const path = rel.length > 0 ? `${root}/${rel}` : root;
+    const names = context.resourceManager.getRawFileListSync(path);
+    for (const name of names) {
+      const childRel = rel.length > 0 ? `${rel}/${name}` : name;
+      let isDir = false;
+      try {
+        // 尝试按目录枚举，成功即目录
+        context.resourceManager.getRawFileListSync(`${path}/${name}`);
+        isDir = true;
+      } catch (err) {
+        isDir = false;
+      }
+      if (isDir) {
+        dirs.push(childRel);
+        MpvConfigManager.listRawfileTree(context, root, childRel, dirs, files);
+      } else {
+        files.push(childRel);
+      }
+    }
+  }
+  /**
+   * 导出：把整个 mpv 配置目录（mpv.conf + scripts/ + script-opts/）
+   * 压缩为 zip，通过系统保存选择器让用户存到文件管理器任意位置。
+   * @returns 保存成功返回 true（用户取消返回 false）
+   */
+  static async exportConfig(context: common.UIAbilityContext): Promise<boolean> {
+    // 1. 先压缩到沙箱缓存
+    const configDir = MpvConfigManager.configDir(context);
+    MpvConfigManager.ensureDir(configDir);
+    const tempZip = context.cacheDir + '/hpvplayer-mpv-config.zip';
+    if (fs.accessSync(tempZip)) {
+      fs.unlinkSync(tempZip);
+    }
+    await zlib.compressFile(configDir, tempZip, {
+      level: zlib.CompressLevel.COMPRESS_LEVEL_DEFAULT_COMPRESSION,
+    });
+
+    // 2. 拉起保存选择器，用户选目标位置
+    const docSave = new picker.DocumentViewPicker(context);
+    const saved: string[] = await docSave.save({
+      newFileNames: [`hpvplayer-mpv-config-${Date.now()}.zip`],
+      fileSuffixChoices: ['.zip'],
+    });
+    if (saved.length === 0) {
+      return false; // 用户取消
+    }
+
+    // 3. 复制到用户选择的位置（URI 可写）
+    const text = MpvConfigManager.readBinary(tempZip);
+    const target = fs.openSync(saved[0], fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+    try {
+      fs.writeSync(target.fd, text.buffer);
+    } finally {
+      fs.closeSync(target);
+      fs.unlinkSync(tempZip);
+    }
+    return true;
+  }
+
+  /**
+   * 导入：用户选择之前导出的 zip（可在文件管理器中编辑过内容），
+   * 解压覆盖沙箱 mpv 配置目录。
+   * @returns 导入的文件数（用户取消返回 -1）
+   */
+  static async importConfig(context: common.UIAbilityContext): Promise<number> {
+    const docPick = new picker.DocumentViewPicker(context);
+    const picked: string[] = await docPick.select({
+      fileSuffixFilters: ['.zip'],
+      maxSelectNumber: 1,
+    });
+    if (picked.length === 0) {
+      return -1;
+    }
+
+    // 复制到沙箱缓存再解压（picker URI 无法直接作为 zlib 输入）
+    const srcBytes = MpvConfigManager.readBinaryUri(picked[0]);
+    const tempZip = context.cacheDir + '/hpvplayer-import.zip';
+    const tmp = fs.openSync(tempZip, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+    try {
+      fs.writeSync(tmp.fd, srcBytes.buffer);
+    } finally {
+      fs.closeSync(tmp);
+    }
+
+    // 解压到临时目录，校验结构（应为 mpv/ 或直接含 mpv.conf）
+    const tempDir = context.cacheDir + '/hpvplayer-import';
+    MpvConfigManager.removeDirRecursive(tempDir);
+    MpvConfigManager.ensureDir(tempDir);
+    await zlib.decompressFile(tempZip, tempDir);
+
+    // 定位配置根：tempDir/mpv/... 或 tempDir/ 直接含 mpv.conf
+    let configRoot = tempDir;
+    if (!fs.accessSync(tempDir + '/' + MpvConfigManager.CONF_FILE)) {
+      const names = fs.listFileSync(tempDir);
+      for (const name of names) {
+        const child = tempDir + '/' + name;
+        let isDir = false;
+        try {
+          isDir = fs.statSync(child).isDirectory();
+        } catch (err) {
+          isDir = false;
+        }
+        if (isDir && fs.accessSync(child + '/' + MpvConfigManager.CONF_FILE)) {
+          configRoot = child;
+          break;
+        }
+      }
+    }
+    if (!fs.accessSync(configRoot + '/' + MpvConfigManager.CONF_FILE)) {
+      MpvConfigManager.removeDirRecursive(tempDir);
+      fs.unlinkSync(tempZip);
+      throw new Error('压缩包中没有找到 mpv.conf（应为应用导出的配置包）');
+    }
+
+    // 覆盖沙箱配置目录
+    const configDir = MpvConfigManager.configDir(context);
+    MpvConfigManager.removeDirRecursive(configDir);
+    MpvConfigManager.ensureDir(configDir);
+    let count = 0;
+    const stack: string[] = [configRoot];
+    while (stack.length > 0) {
+      const cur = stack.pop()!;
+      for (const name of fs.listFileSync(cur)) {
+        const child = cur + '/' + name;
+        let isDir = false;
+        try {
+          isDir = fs.statSync(child).isDirectory();
+        } catch (err) {
+          isDir = false;
+        }
+        const rel = child.substring(configRoot.length + 1);
+        if (isDir) {
+          MpvConfigManager.ensureDir(configDir + '/' + rel);
+          stack.push(child);
+        } else {
+          MpvConfigManager.copyFileTo(child, configDir + '/' + rel);
+          count++;
+        }
+      }
+    }
+    MpvConfigManager.removeDirRecursive(tempDir);
+    fs.unlinkSync(tempZip);
+    return count;
+  }
+
+  /** 读二进制文件（沙箱路径） */
+  private static readBinary(path: string): Uint8Array {
+    const file = fs.openSync(path, fs.OpenMode.READ_ONLY);
+    try {
+      const stat = fs.statSync(path);
+      const buf = new ArrayBuffer(stat.size);
+      fs.readSync(file.fd, buf);
+      return new Uint8Array(buf);
+    } finally {
+      fs.closeSync(file);
+    }
+  }
+
+  // ---------- 配置文件管理器（目录树浏览/编辑） ----------
+
+  /** 文件管理器条目 */
+  static makeFileEntry(name: string, path: string, isDir: boolean, size: number,
+    mtime: number): ConfigFileEntry {
+    return { name: name, path: path, isDir: isDir, size: size, mtime: mtime };
+  }
+
+  /** 列出目录（相对 mpv 配置根），目录在前、按名排序 */
+  static listConfigDir(context: common.UIAbilityContext,
+    relDir: string): ConfigFileEntry[] {
+    const dir = MpvConfigManager.configDir(context) +
+      (relDir.length > 0 ? '/' + relDir : '');
+    if (!fs.accessSync(dir)) {
+      return [];
+    }
+    const entries: ConfigFileEntry[] = [];
+    for (const name of fs.listFileSync(dir).sort()) {
+      if (name.startsWith('.') || name.startsWith('._')) {
+        continue;
+      }
+      const path = dir + '/' + name;
+      let isDir = false;
+      let size = 0;
+      let mtime = 0;
+      try {
+        const stat = fs.statSync(path);
+        isDir = stat.isDirectory();
+        size = stat.size;
+        mtime = stat.mtime;
+      } catch (err) {
+        // 无权限等，跳过
+        continue;
+      }
+      const rel = relDir.length > 0 ? `${relDir}/${name}` : name;
+      entries.push(MpvConfigManager.makeFileEntry(name, rel, isDir, size, mtime));
+    }
+    // 目录在前
+    entries.sort((a: ConfigFileEntry, b: ConfigFileEntry) => {
+      if (a.isDir !== b.isDir) {
+        return a.isDir ? -1 : 1;
+      }
+      return a.name.localeCompare(b.name);
+    });
+    return entries;
+  }
+
+  /** 读文本文件（相对配置根） */
+  static readConfigFile(context: common.UIAbilityContext, relPath: string): string {
+    return MpvConfigManager.readFileText(
+      MpvConfigManager.configDir(context) + '/' + relPath);
+  }
+
+  /** 写文本文件（相对配置根），自动创建父目录 */
+  static writeConfigFile(context: common.UIAbilityContext, relPath: string,
+    text: string): void {
+    MpvConfigManager.copyTextTo(text,
+      MpvConfigManager.configDir(context) + '/' + relPath);
+  }
+
+  /** 新建文件或目录（相对配置根）；重名自动加序号，返回最终相对路径 */
+  static createConfigEntry(context: common.UIAbilityContext, relDir: string,
+    name: string, asDir: boolean): string {
+    const dir = MpvConfigManager.configDir(context) +
+      (relDir.length > 0 ? '/' + relDir : '');
+    MpvConfigManager.ensureDir(dir);
+    let target = dir + '/' + name;
+    let seq = 1;
+    const dot = asDir ? -1 : name.lastIndexOf('.');
+    const base = dot > 0 ? name.substring(0, dot) : name;
+    const ext = dot > 0 ? name.substring(dot) : '';
+    while (fs.accessSync(target)) {
+      target = dir + '/' + base + '-' + seq + ext;
+      seq++;
+    }
+    if (asDir) {
+      fs.mkdirSync(target, true);
+    } else {
+      const file = fs.openSync(target, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE);
+      fs.closeSync(file);
+    }
+    const finalName = target.substring(target.lastIndexOf('/') + 1);
+    return relDir.length > 0 ? `${relDir}/${finalName}` : finalName;
+  }
+
+  /** 重命名（相对配置根），返回新相对路径 */
+  static renameConfigEntry(context: common.UIAbilityContext, relPath: string,
+    newName: string): string {
+    const abs = MpvConfigManager.configDir(context) + '/' + relPath;
+    const parent = relPath.substring(0, relPath.lastIndexOf('/'));
+    const dir = MpvConfigManager.configDir(context) + (parent.length > 0 ? '/' + parent : '');
+    let target = dir + '/' + newName;
+    let seq = 1;
+    while (fs.accessSync(target)) {
+      target = dir + '/' + newName + '-' + seq;
+      seq++;
+    }
+    fs.renameSync(abs, target);
+    const finalName = target.substring(target.lastIndexOf('/') + 1);
+    return parent.length > 0 ? `${parent}/${finalName}` : finalName;
+  }
+
+  /** 删除（相对配置根），目录递归删除 */
+  static deleteConfigEntry(context: common.UIAbilityContext, relPath: string): void {
+    const abs = MpvConfigManager.configDir(context) + '/' + relPath;
+    let isDir = false;
+    try {
+      isDir = fs.statSync(abs).isDirectory();
+    } catch (err) {
+      isDir = false;
+    }
+    if (isDir) {
+      MpvConfigManager.removeDirRecursive(abs);
+    } else {
+      fs.unlinkSync(abs);
+    }
+  }
+
+  /** 读文本文件（支持 file://docs URI 与沙箱路径） */
+  static readUriText(uri: string): string {
+    let path = uri;
+    if (uri.startsWith('file://')) {
+      const idx = uri.indexOf('://');
+      let rest = uri.substring(idx + 3);
+      if (rest.startsWith('docs/')) {
+        rest = rest.substring('docs'.length);
+      }
+      try {
+        path = decodeURIComponent(rest);
+      } catch (err) {
+        path = rest;
+      }
+    }
+    try {
+      return MpvConfigManager.readFileText(path);
+    } catch (err) {
+      return '';
+    }
+  }
+
+  /** 文本复制到沙箱目标路径（自动建父目录） */
+  private static copyTextTo(text: string, destPath: string): void {
+    const destDir = destPath.substring(0, destPath.lastIndexOf('/'));
+    MpvConfigManager.ensureDir(destDir);
+    const file = fs.openSync(destPath,
+      fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+    try {
+      fs.writeSync(file.fd, text);
+    } finally {
+      fs.closeSync(file);
+    }
+  }
+
+  /** 读二进制文件（支持 file://docs URI 与沙箱路径） */
+  private static readBinaryUri(uri: string): Uint8Array {
+    let path = uri;
+    if (uri.startsWith('file://')) {
+      const idx = uri.indexOf('://');
+      let rest = uri.substring(idx + 3);
+      if (rest.startsWith('docs/')) {
+        rest = rest.substring('docs'.length);
+      }
+      try {
+        path = decodeURIComponent(rest);
+      } catch (err) {
+        path = rest;
+      }
+    }
+    return MpvConfigManager.readBinary(path);
+  }
+
   static readConf(context: common.UIAbilityContext): string {
     const conf = MpvConfigManager.configDir(context) + '/' + MpvConfigManager.CONF_FILE;
     return MpvConfigManager.readFileText(conf);
@@ -189,7 +610,7 @@ export class MpvConfigManager {
     return text;
   }
 
-  /** 列出 scripts 目录下的 Lua 脚本（含停用的） */
+  /** 列出 scripts 目录下的 Lua 脚本（单文件 + 脚本包目录，含停用的） */
   static listScripts(context: common.UIAbilityContext): ScriptEntry[] {
     const dir = MpvConfigManager.configDir(context) + '/' + MpvConfigManager.SCRIPTS_DIR;
     if (!fs.accessSync(dir)) {
@@ -198,12 +619,35 @@ export class MpvConfigManager {
     const entries: ScriptEntry[] = [];
     const names = fs.listFileSync(dir).sort();
     for (const name of names) {
+      if (name.startsWith('.') || name.startsWith('._')) {
+        continue;
+      }
+      const path = dir + '/' + name;
+      let isDir = false;
+      try {
+        isDir = fs.statSync(path).isDirectory();
+      } catch (err) {
+        isDir = false;
+      }
+      if (isDir) {
+        // 脚本包目录：剥 .off 后缀识别停用状态，目录内有 .lua 才算
+        let pkgName = name;
+        let pkgEnabled = true;
+        if (name.endsWith(MpvConfigManager.OFF_EXT)) {
+          pkgName = name.substring(0, name.length - MpvConfigManager.OFF_EXT.length);
+          pkgEnabled = false;
+        }
+        if (MpvConfigManager.dirHasLua(path)) {
+          entries.push({ name: pkgName + '/', path: path, enabled: pkgEnabled });
+        }
+        continue;
+      }
       if (name.endsWith('.lua')) {
-        entries.push({ name: name, path: dir + '/' + name, enabled: true });
+        entries.push({ name: name, path: path, enabled: true });
       } else if (name.endsWith('.lua' + MpvConfigManager.OFF_EXT)) {
         entries.push({
           name: name.substring(0, name.length - MpvConfigManager.OFF_EXT.length),
-          path: dir + '/' + name,
+          path: path,
           enabled: false,
         });
       }
@@ -211,28 +655,115 @@ export class MpvConfigManager {
     return entries;
   }
 
-  /** 启用/停用脚本（切换 .lua <-> .lua.off） */
+  private static dirHasLua(dir: string): boolean {
+    const stack: string[] = [dir];
+    while (stack.length > 0) {
+      const cur = stack.pop()!;
+      let names: string[] = [];
+      try {
+        names = fs.listFileSync(cur);
+      } catch (err) {
+        continue;
+      }
+      for (const name of names) {
+        if (name.startsWith('.') || name.startsWith('._')) {
+          continue;
+        }
+        const child = cur + '/' + name;
+        let isDir = false;
+        try {
+          isDir = fs.statSync(child).isDirectory();
+        } catch (err) {
+          isDir = false;
+        }
+        if (isDir) {
+          stack.push(child);
+        } else if (name.endsWith('.lua') || name.endsWith('.lua' + MpvConfigManager.OFF_EXT)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /** 启用/停用脚本（单文件切 .lua <-> .lua.off；脚本包目录切 目录名 <-> 目录名.off） */
   static toggleScript(entry: ScriptEntry, enable: boolean): void {
     const dir = entry.path.substring(0, entry.path.lastIndexOf('/'));
+    const isDir = entry.name.endsWith('/');
+    // 统一从展示名取原始名（已剥掉 .off 和目录斜杠）
+    const baseName = isDir ? entry.name.substring(0, entry.name.length - 1) : entry.name;
+    const suffix = isDir ? '' : '.lua';
     const target = enable ?
-      dir + '/' + entry.name :
-      dir + '/' + entry.name + MpvConfigManager.OFF_EXT;
+      dir + '/' + baseName + suffix :
+      dir + '/' + baseName + suffix + MpvConfigManager.OFF_EXT;
     if (entry.path !== target) {
       fs.renameSync(entry.path, target);
     }
   }
 
   static deleteScript(entry: ScriptEntry): void {
-    fs.unlinkSync(entry.path);
+    let isDir = false;
+    try {
+      isDir = fs.statSync(entry.path).isDirectory();
+    } catch (err) {
+      isDir = false;
+    }
+    if (isDir) {
+      MpvConfigManager.removeDirRecursive(entry.path);
+    } else {
+      fs.unlinkSync(entry.path);
+    }
   }
 
-  /** 读取脚本内容 */
+  private static removeDirRecursive(dir: string): void {
+    let names: string[] = [];
+    try {
+      names = fs.listFileSync(dir);
+    } catch (err) {
+      return;
+    }
+    for (const name of names) {
+      const child = dir + '/' + name;
+      let childIsDir = false;
+      try {
+        childIsDir = fs.statSync(child).isDirectory();
+      } catch (err) {
+        childIsDir = false;
+      }
+      if (childIsDir) {
+        MpvConfigManager.removeDirRecursive(child);
+      } else {
+        try {
+          fs.unlinkSync(child);
+        } catch (err) {
+          // 忽略单项失败
+        }
+      }
+    }
+    try {
+      fs.rmdirSync(dir);
+    } catch (err) {
+      // 忽略
+    }
+  }
+
+  /** 读取脚本内容（脚本包目录 → 读与目录同名的入口 .lua，否则读第一个 .lua） */
   static readScript(entry: ScriptEntry): string {
+    if (entry.name.endsWith('/')) {
+      const entryFile = MpvConfigManager.findEntryLua(entry.path, entry.name);
+      if (entryFile !== '') {
+        return MpvConfigManager.readFileText(entryFile);
+      }
+      return '';
+    }
     return MpvConfigManager.readFileText(entry.path);
   }
 
-  /** 覆写脚本内容 */
+  /** 覆写脚本内容（仅单文件脚本；脚本包不支持整体覆写） */
   static writeScript(entry: ScriptEntry, text: string): void {
+    if (entry.name.endsWith('/')) {
+      throw new Error('脚本包不支持整体编辑，请编辑包内文件或重新导入');
+    }
     const file = fs.openSync(entry.path,
       fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
     try {
@@ -240,6 +771,43 @@ export class MpvConfigManager {
     } finally {
       fs.closeSync(file);
     }
+  }
+
+  /** 找脚本包入口：优先 <目录名>.lua，否则按序第一个 .lua */
+  private static findEntryLua(dir: string, displayName: string): string {
+    const dirName = displayName.endsWith('/') ?
+      displayName.substring(0, displayName.length - 1) : displayName;
+    const stack: string[] = [dir];
+    let firstLua = '';
+    while (stack.length > 0) {
+      const cur = stack.pop()!;
+      let names: string[] = [];
+      try {
+        names = fs.listFileSync(cur);
+      } catch (err) {
+        continue;
+      }
+      for (const name of names.sort()) {
+        if (name.startsWith('.') || name.startsWith('._')) {
+          continue;
+        }
+        const child = cur + '/' + name;
+        let isDir = false;
+        try {
+          isDir = fs.statSync(child).isDirectory();
+        } catch (err) {
+          isDir = false;
+        }
+        if (isDir) {
+          stack.push(child);
+        } else if (name === `${dirName}.lua`) {
+          return child; // 与目录同名的入口最优先
+        } else if (firstLua === '' && name.endsWith('.lua')) {
+          firstLua = child;
+        }
+      }
+    }
+    return firstLua;
   }
 
   /** 新建空白脚本，返回最终脚本名（重名自动加序号） */
@@ -351,6 +919,144 @@ export class MpvConfigManager {
       fs.closeSync(file);
     }
     return target.substring(target.lastIndexOf('/') + 1);
+  }
+
+  /**
+   * 导入脚本（智能）：.lua 文件 → 导入 scripts/；
+   * 文件夹 → 递归复制为 scripts/<文件夹名>/（保持内部结构，require 相对路径不断裂）；
+   * 文件夹内含 script-opts/*.conf 时一并导入 script-opts/。
+   * @returns 导入摘要（用于 toast）
+   */
+  static importSmart(context: common.UIAbilityContext, uri: string,
+    displayName: string): string {
+    const stat = fs.statSync(uri.startsWith('file://') ?
+      MpvConfigManager.uriToPath(uri) : uri);
+    if (stat.isDirectory()) {
+      return MpvConfigManager.importScriptDir(context, uri, displayName);
+    }
+    const name = MpvConfigManager.importScript(context, uri, displayName);
+    return `已导入 ${name}`;
+  }
+
+  /** 导入脚本包目录：scripts/<目录名>/**（保持结构）+ 提取 script-opts/*.conf */
+  private static importScriptDir(context: common.UIAbilityContext,
+    dirUri: string, displayName: string): string {
+    const rootName = displayName.length > 0 ? displayName :
+      dirUri.substring(dirUri.lastIndexOf('/') + 1);
+    const scriptsRoot = MpvConfigManager.configDir(context) + '/' + MpvConfigManager.SCRIPTS_DIR;
+    MpvConfigManager.ensureDir(scriptsRoot);
+
+    // 重名时加序号
+    let targetDir = scriptsRoot + '/' + rootName;
+    let seq = 1;
+    while (fs.accessSync(targetDir)) {
+      targetDir = scriptsRoot + '/' + rootName + '-' + seq;
+      seq++;
+    }
+    const usedName = targetDir.substring(targetDir.lastIndexOf('/') + 1);
+
+    let luaCount = 0;
+    let confCount = 0;
+    const stack: string[] = [dirUri];
+    while (stack.length > 0) {
+      const cur = stack.pop()!;
+      let names: string[] = [];
+      try {
+        names = fs.listFileSync(cur.startsWith('file://') ?
+          MpvConfigManager.uriToPath(cur) : cur);
+      } catch (err) {
+        continue; // 无权限子项跳过
+      }
+      for (const name of names) {
+        if (name.startsWith('.') || name.startsWith('._')) {
+          continue;
+        }
+        const childUri = (cur.endsWith('/') ? cur : cur + '/') + name;
+        let childPath = childUri;
+        if (childUri.startsWith('file://')) {
+          childPath = MpvConfigManager.uriToPath(childUri);
+        }
+        let isDir = false;
+        try {
+          isDir = fs.statSync(childPath).isDirectory();
+        } catch (err) {
+          isDir = false;
+        }
+        if (isDir) {
+          stack.push(childUri);
+          continue;
+        }
+        const relPath = MpvConfigManager.relativePathUnder(dirUri, childUri);
+        if (relPath === '') {
+          continue;
+        }
+        // script-opts 目录下的 .conf 提到 script-opts/
+        if (relPath.startsWith('script-opts/') && name.endsWith('.conf')) {
+          MpvConfigManager.copyFileTo(childPath,
+            MpvConfigManager.configDir(context) + '/' +
+            MpvConfigManager.SCRIPT_OPTS_DIR + '/' + name);
+          confCount++;
+          continue;
+        }
+        // 其余文件（.lua 及脚本包自带的资源）按相对路径落位
+        const dest = targetDir + '/' + relPath;
+        MpvConfigManager.copyFileTo(childPath, dest);
+        if (name.endsWith('.lua')) {
+          luaCount++;
+        }
+      }
+    }
+    if (luaCount === 0 && confCount === 0) {
+      try {
+        fs.rmdirSync(targetDir);
+      } catch (err) {
+        // 忽略清理失败
+      }
+      throw new Error('目录中没有找到 .lua 脚本');
+    }
+    let summary = `已导入脚本包 ${usedName}（${luaCount} 个 lua`;
+    if (confCount > 0) {
+      summary += `、${confCount} 个配置`;
+    }
+    return summary + '）';
+  }
+
+  private static uriToPath(uri: string): string {
+    let rest = uri;
+    const idx = rest.indexOf('://');
+    if (idx > 0) {
+      rest = rest.substring(idx + 3);
+    }
+    if (rest.startsWith('docs/')) {
+      rest = rest.substring('docs'.length);
+    }
+    try {
+      return decodeURIComponent(rest);
+    } catch (err) {
+      return rest;
+    }
+  }
+
+  /** child 在 root 下时返回相对路径（以 / 分隔），否则返回空串 */
+  private static relativePathUnder(rootUri: string, childUri: string): string {
+    const root = rootUri.endsWith('/') ? rootUri : rootUri + '/';
+    if (!childUri.startsWith(root)) {
+      return '';
+    }
+    return childUri.substring(root.length);
+  }
+
+  private static copyFileTo(srcPath: string, destPath: string): void {
+    const destDir = destPath.substring(0, destPath.lastIndexOf('/'));
+    MpvConfigManager.ensureDir(destDir);
+    const text = MpvConfigManager.readFileText(srcPath);
+    const file = fs.openSync(destPath,
+      fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+    try {
+      fs.writeSync(file.fd, text);
+    } finally {
+      fs.closeSync(file);
+    }
   }
 
   private static ensureDir(dir: string): void {
