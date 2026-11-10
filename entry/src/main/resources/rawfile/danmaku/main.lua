@@ -815,7 +815,7 @@ mp.register_script_message("auto_load_fallback", function()
     end
 end)
 
-mp.register_script_message("check-update", check_for_update)
+-- check-update（自更新）已随插件内化移除：脚本更新只随 HPVPlayer 应用发版分发
 mp.register_script_message("clear-source", clear_source)
 mp.register_script_message("immediately_save_danmaku", save_danmaku)
 mp.register_script_message("open_source_delay_menu", open_delay_menu)

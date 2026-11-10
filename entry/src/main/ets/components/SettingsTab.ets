@@ -35,19 +35,15 @@ export struct SettingsTab {
   @Local confPath: string = '';
   @Local scripts: ScriptEntry[] = [];
   @Local scriptsDir: string = '';
-  // 脚本查看/编辑弹层
+  // 脚本查看弹层（只读诊断；插件已内化，不再提供编辑）
   @Local showScriptEditor: boolean = false;
   @Local editorTitle: string = '';
   @Local editorText: string = '';
-  @Local editorSaving: boolean = false;
   private editorEntry: ScriptEntry | null = null;
   // 内置脚本市场弹层
   @Local showBuiltin: boolean = false;
   // script-opts 弹层
   @Local optsNames: string[] = [];
-  // 新建脚本弹层
-  @Local showNewScript: boolean = false;
-  @Local newScriptName: string = '';
 
   private toast(message: string): void {
     this.getUIContext().getPromptAction().showToast({ message: message });
@@ -150,71 +146,11 @@ export struct SettingsTab {
 
   // ---------- Lua 脚本 ----------
 
-  private async importScript(): Promise<void> {
-    try {
-      const docPicker = new picker.DocumentViewPicker();
-      const result: string[] = await docPicker.select({
-        selectMode: picker.DocumentSelectMode.MIXED,
-        fileSuffixFilters: ['.lua'],
-        maxSelectNumber: 20,
-      });
-      if (result.length === 0) {
-        return;
-      }
-      const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
-      const summaries: string[] = [];
-      for (const uri of result) {
-        // displayName 取最后一段（文件夹名或文件名）
-        let display = uri.substring(uri.lastIndexOf('/') + 1);
-        try {
-          display = decodeURIComponent(display);
-        } catch (err) {
-          // 保留原样
-        }
-        try {
-          summaries.push(MpvConfigManager.importSmart(context, uri, display));
-        } catch (err) {
-          summaries.push(`${display}: ${(err as Error).message}`);
-        }
-      }
-      this.reloadScripts();
-      this.getUIContext().getPromptAction()
-        .showToast({ message: summaries.join('；').substring(0, 100) });
-    } catch (err) {
-      hilog.error(DOMAIN, 'HPVPlayer', 'import script failed: %{public}s', JSON.stringify(err));
-    }
-  }
-
   private openScriptEditor(entry: ScriptEntry): void {
-    const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
     this.editorEntry = entry;
     this.editorTitle = entry.name;
     this.editorText = MpvConfigManager.readScript(entry);
-    this.editorSaving = false;
     this.showScriptEditor = true;
-  }
-
-  private saveScriptEditor(): void {
-    const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
-    if (this.editorEntry !== null) {
-      MpvConfigManager.writeScript(this.editorEntry, this.editorText);
-      this.toast('脚本已保存，下次播放生效');
-    }
-    this.showScriptEditor = false;
-  }
-
-  private createScript(): void {
-    const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
-    const name = this.newScriptName.trim();
-    if (name.length === 0) {
-      this.toast('请输入脚本名');
-      return;
-    }
-    const finalName = MpvConfigManager.createScript(context, name);
-    this.reloadScripts();
-    this.showNewScript = false;
-    this.newScriptName = '';
-    this.toast(`已创建 ${finalName}`);
   }
 
   private installBuiltin(idx: number): void {
@@ -322,28 +258,24 @@ export struct SettingsTab {
         .fontWeight(FontWeight.Medium)
         .fontColor($r('app.color.text_primary'))
         .margin({ top: 4 })
-      TextArea({ text: this.editorText, placeholder: '-- Lua 脚本内容' })
-        .height(320)
-        .fontSize(12)
-        .fontFamily('monospace')
-        .backgroundColor($r('app.color.input_background'))
-        .fontColor($r('app.color.text_primary'))
-        .borderRadius(12)
-        .onChange((v: string) => {
-          this.editorText = v;
-        })
-      Button('保存')
-        .height(44)
-        .fontSize(16)
-        .fontWeight(FontWeight.Medium)
-        .width('100%')
-        .backgroundColor($r('app.color.brand'))
-        .fontColor($r('app.color.text_on_brand'))
-        .borderRadius(22)
-        .margin({ bottom: 28 })
-        .onClick(() => this.saveScriptEditor())
+      // 只读查看：插件已内化，脚本内容随应用更新，不再提供编辑
+      Scroll() {
+        Text(this.editorText)
+          .fontSize(12)
+          .fontFamily('monospace')
+          .fontColor($r('app.color.text_primary'))
+          .width('100%')
+          .textAlign(TextAlign.Start)
+      }
+      .scrollBar(BarState.Auto)
+      .layoutWeight(1)
+      .backgroundColor($r('app.color.input_background'))
+      .borderRadius(12)
+      .align(Alignment.TopStart)
+      .margin({ bottom: 24 })
     }
     .width('100%')
+    .height('100%')
     .padding({ left: 20, right: 20 })
   }
 
@@ -370,40 +302,6 @@ export struct SettingsTab {
     .height('100%')
     .padding({ left: 20, right: 20, bottom: 24 })
   }
-
-  @Builder
-  newScriptSheet() {
-    Column({ space: 12 }) {
-      Text('新建脚本')
-        .fontSize(17)
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.text_primary'))
-        .margin({ top: 4 })
-      TextInput({ text: this.newScriptName, placeholder: '脚本名（如 my-script）' })
-        .height(48)
-        .fontSize(16)
-        .backgroundColor($r('app.color.input_background'))
-        .fontColor($r('app.color.text_primary'))
-        .placeholderColor($r('app.color.text_tertiary'))
-        .borderRadius(12)
-        .onChange((v: string) => {
-          this.newScriptName = v;
-        })
-      Button('创建')
-        .height(44)
-        .fontSize(16)
-        .fontWeight(FontWeight.Medium)
-        .width('100%')
-        .backgroundColor($r('app.color.brand'))
-        .fontColor($r('app.color.text_on_brand'))
-        .borderRadius(22)
-        .margin({ bottom: 28 })
-        .onClick(() => this.createScript())
-    }
-    .width('100%')
-    .padding({ left: 20, right: 20 })
-  }
-
 
   /** 从文件选择器导入 .conf 到 script-opts/ */
   private async importScriptOpt(): Promise<void> {
@@ -745,7 +643,7 @@ export struct SettingsTab {
         this.sectionTitle('Lua 脚本')
         Column({ space: 8 }) {
           if (this.scripts.length === 0) {
-            Text('暂无脚本。可导入 .lua 文件、新建脚本或安装内置脚本。')
+            Text('暂无脚本。可安装下方内置脚本。')
               .fontSize(13)
               .fontColor($r('app.color.text_secondary'))
               .width('100%')
@@ -756,30 +654,12 @@ export struct SettingsTab {
           }, (script: ScriptEntry) => `${script.name}-${script.enabled}`)
 
           Row({ space: 8 }) {
-            Button('导入')
+            Button('内置脚本')
               .height(40)
               .fontSize(14)
               .layoutWeight(1)
               .backgroundColor($r('app.color.brand'))
               .fontColor($r('app.color.text_on_brand'))
-              .borderRadius(20)
-              .onClick(() => this.importScript())
-            Button('新建')
-              .height(40)
-              .fontSize(14)
-              .layoutWeight(1)
-              .backgroundColor($r('app.color.brand_light'))
-              .fontColor($r('app.color.brand'))
-              .borderRadius(20)
-              .onClick(() => {
-                this.showNewScript = true;
-              })
-            Button('内置脚本')
-              .height(40)
-              .fontSize(14)
-              .layoutWeight(1)
-              .backgroundColor($r('app.color.brand_light'))
-              .fontColor($r('app.color.brand'))
               .borderRadius(20)
               .onClick(() => {
                 this.showBuiltin = true;
@@ -796,7 +676,7 @@ export struct SettingsTab {
           .width('100%')
           .margin({ top: 4 })
 
-          Text(`脚本目录: ${this.scriptsDir}\n支持单个 .lua 文件或整个脚本包文件夹（保持内部结构，\n自动提取 script-opts 配置）；点击脚本名可查看/编辑。`)
+          Text(`脚本目录: ${this.scriptsDir}\n插件已内化：仅应用内置脚本可安装运行，外部脚本一律停用；\n点击脚本名可只读查看，开关可启停，删除可移除。`)
             .fontSize(12)
             .fontColor($r('app.color.text_tertiary'))
             .width('100%')
@@ -965,7 +845,7 @@ export struct SettingsTab {
       dragBar: true,
       showClose: true,
       backgroundColor: $r('app.color.card_background'),
-      title: { title: '编辑脚本' },
+      title: { title: '查看脚本' },
     })
     .bindSheet($$this.showBuiltin, this.builtinSheet(), {
       height: SheetSize.MEDIUM,
@@ -978,12 +858,5 @@ export struct SettingsTab {
     .width('100%')
     .height('100%')
     .backgroundColor($r('app.color.page_background'))
-    .bindSheet($$this.showNewScript, this.newScriptSheet(), {
-      height: SheetSize.FIT_CONTENT,
-      dragBar: true,
-      showClose: true,
-      backgroundColor: $r('app.color.card_background'),
-      title: { title: '新建脚本' },
-    })
   }
 }

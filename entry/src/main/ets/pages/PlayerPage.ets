@@ -334,13 +334,21 @@ struct PlayerPage {
 
   // ========== 弹幕 (内置 danmaku Lua 脚本联动) ==========
 
-  /** 确保内置弹幕脚本已安装（首次播放自动装，已装不覆盖） */
+  /** 确保内置弹幕脚本已安装，并执行插件内化策略（外来脚本停用） */
   private ensureDanmakuScript(): void {
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
     try {
       MpvConfigManager.installDanmaku(context);
     } catch (err) {
       hilog.warn(DOMAIN, 'HPVPlayer', 'install danmaku failed: %{public}s', JSON.stringify(err));
+    }
+    try {
+      const disabled = MpvConfigManager.enforceInternalScripts(context);
+      if (disabled > 0) {
+        hilog.info(DOMAIN, 'HPVPlayer', 'internalized: disabled %{public}d foreign scripts', disabled);
+      }
+    } catch (err) {
+      hilog.warn(DOMAIN, 'HPVPlayer', 'enforce internal scripts failed: %{public}s', JSON.stringify(err));
     }
     this.danmakuOn = MpvConfigManager.hasDanmaku(context);
   }

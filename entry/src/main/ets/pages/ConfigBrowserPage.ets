@@ -111,6 +111,12 @@ export struct ConfigBrowserPage {
         .showToast({ message: '二进制文件暂不支持编辑，可导出后在电脑上处理' });
       return;
     }
+    if (entry.path.split('/')[0] === 'scripts') {
+      // 插件已内化：scripts/ 由应用统一管理，配置浏览器只读
+      this.getUIContext().getPromptAction()
+        .showToast({ message: '插件已内化，脚本文件由应用管理，不可编辑' });
+      return;
+    }
     this.editorTitle = entry.name;
     this.editorRelPath = entry.path;
     this.editorText = MpvConfigManager.readConfigFile(this.context, entry.path);
@@ -118,10 +124,15 @@ export struct ConfigBrowserPage {
   }
 
   private saveEditor(): void {
-    MpvConfigManager.writeConfigFile(this.context, this.editorRelPath, this.editorText);
-    this.showEditor = false;
-    this.reload();
-    this.getUIContext().getPromptAction().showToast({ message: '已保存，下次播放生效' });
+    try {
+      MpvConfigManager.writeConfigFile(this.context, this.editorRelPath, this.editorText);
+      this.showEditor = false;
+      this.reload();
+      this.getUIContext().getPromptAction().showToast({ message: '已保存，下次播放生效' });
+    } catch (err) {
+      this.getUIContext().getPromptAction()
+        .showToast({ message: `保存失败: ${(err as Error).message}` });
+    }
   }
 
   private doCreate(): void {
@@ -130,13 +141,18 @@ export struct ConfigBrowserPage {
       this.getUIContext().getPromptAction().showToast({ message: '请输入名称' });
       return;
     }
-    const finalPath = MpvConfigManager.createConfigEntry(
-      this.context, this.currentDir, name, this.createAsDir);
-    this.showCreate = false;
-    this.createName = '';
-    this.reload();
-    this.getUIContext().getPromptAction()
-      .showToast({ message: `已创建 ${finalPath.substring(finalPath.lastIndexOf('/') + 1)}` });
+    try {
+      const finalPath = MpvConfigManager.createConfigEntry(
+        this.context, this.currentDir, name, this.createAsDir);
+      this.showCreate = false;
+      this.createName = '';
+      this.reload();
+      this.getUIContext().getPromptAction()
+        .showToast({ message: `已创建 ${finalPath.substring(finalPath.lastIndexOf('/') + 1)}` });
+    } catch (err) {
+      this.getUIContext().getPromptAction()
+        .showToast({ message: `创建失败: ${(err as Error).message}` });
+    }
   }
 
   private openRename(entry: ConfigFileEntry): void {
@@ -150,15 +166,25 @@ export struct ConfigBrowserPage {
     if (name.length === 0 || this.renameTarget === null) {
       return;
     }
-    MpvConfigManager.renameConfigEntry(this.context, this.renameTarget.path, name);
-    this.showRename = false;
-    this.reload();
+    try {
+      MpvConfigManager.renameConfigEntry(this.context, this.renameTarget.path, name);
+      this.showRename = false;
+      this.reload();
+    } catch (err) {
+      this.getUIContext().getPromptAction()
+        .showToast({ message: `重命名失败: ${(err as Error).message}` });
+    }
   }
 
   private doDelete(entry: ConfigFileEntry): void {
-    MpvConfigManager.deleteConfigEntry(this.context, entry.path);
-    this.reload();
-    this.getUIContext().getPromptAction().showToast({ message: `已删除 ${entry.name}` });
+    try {
+      MpvConfigManager.deleteConfigEntry(this.context, entry.path);
+      this.reload();
+      this.getUIContext().getPromptAction().showToast({ message: `已删除 ${entry.name}` });
+    } catch (err) {
+      this.getUIContext().getPromptAction()
+        .showToast({ message: `删除失败: ${(err as Error).message}` });
+    }
   }
 
   private onEntryTap(entry: ConfigFileEntry): void {
